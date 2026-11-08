@@ -1,4 +1,4 @@
-package com.seuapp.launcher.glass
+package com.hyperos.ultimatelauncher
 
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
