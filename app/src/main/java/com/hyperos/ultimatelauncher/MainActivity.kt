@@ -275,7 +275,7 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
         }
 
         HorizontalPager(pager, Modifier.weight(1f)) { p ->
-            LazyGrid(p, pager, pages.getOrElse(p) { emptyList() }, prefs, ink, glass,
+            AppPage(p, pager, pages.getOrElse(p) { emptyList() }, prefs, ink, glass,
                 onOpen = { openApp(ctx, view, it) }, onLong = { menuApp = it })
         }
 
@@ -398,7 +398,7 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
 }
 
 @Composable
-fun LazyGrid(
+fun AppPage(
     p: Int,
     pager: PagerState,
     apps: List<AppItem>,
