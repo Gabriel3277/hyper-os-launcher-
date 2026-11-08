@@ -6,9 +6,16 @@ import android.app.ActivityOptions
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.LauncherApps
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
+import android.os.UserHandle
 import android.provider.Settings
 import android.view.View
 import androidx.activity.ComponentActivity
@@ -38,6 +45,7 @@ import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -47,6 +55,10 @@ class AppItem(
     val activity: String,
     val icon: ImageBitmap
 )
+
+object IconCache {
+    val map = ConcurrentHashMap<String, ImageBitmap>()
+}
 
 class GlassStyle(val alpha: Float, val liquid: Boolean)
 
@@ -98,7 +110,9 @@ class Prefs(ctx: Context) {
         private set
     var liquid by mutableStateOf(sp.getBoolean("liquid", true))
         private set
-    var blur by mutableIntStateOf(sp.getInt("blur", 25))
+    var blur by mutableIntStateOf(sp.getInt("blurV2", 0))
+        private set
+    var pageFx by mutableStateOf(sp.getBoolean("pageFx", true))
         private set
 
     fun changeHidden(pkg: String, hide: Boolean) {
@@ -131,7 +145,11 @@ class Prefs(ctx: Context) {
     }
     fun changeBlur(v: Int) {
         blur = v
-        sp.edit().putInt("blur", v).apply()
+        sp.edit().putInt("blurV2", v).apply()
+    }
+    fun changePageFx(v: Boolean) {
+        pageFx = v
+        sp.edit().putBoolean("pageFx", v).apply()
     }
 }
 
@@ -146,12 +164,46 @@ class MainActivity : ComponentActivity() {
             val ctx = LocalContext.current
             val prefs = remember { Prefs(ctx) }
             var apps by remember { mutableStateOf<List<AppItem>>(emptyList()) }
+
             LaunchedEffect(reload) {
                 apps = withContext(Dispatchers.Default) { loadApps(ctx) }
             }
             LaunchedEffect(prefs.blur) {
                 window.setBackgroundBlurRadius(prefs.blur)
             }
+            DisposableEffect(Unit) {
+                val la = ctx.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+                fun changed(pkg: String?) {
+                    if (pkg != null) {
+                        IconCache.map.keys.removeAll { it.startsWith("$pkg/") }
+                    }
+                    reload++
+                }
+                val cb = object : LauncherApps.Callback() {
+                    override fun onPackageRemoved(packageName: String?, user: UserHandle?) {
+                        changed(packageName)
+                    }
+                    override fun onPackageAdded(packageName: String?, user: UserHandle?) {
+                        changed(packageName)
+                    }
+                    override fun onPackageChanged(packageName: String?, user: UserHandle?) {
+                        changed(packageName)
+                    }
+                    override fun onPackagesAvailable(
+                        packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean
+                    ) {
+                        packageNames?.forEach { changed(it) }
+                    }
+                    override fun onPackagesUnavailable(
+                        packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean
+                    ) {
+                        packageNames?.forEach { changed(it) }
+                    }
+                }
+                la.registerCallback(cb)
+                onDispose { la.unregisterCallback(cb) }
+            }
+
             MaterialTheme(
                 colorScheme = if (prefs.dark) darkColorScheme() else lightColorScheme()
             ) {
@@ -164,11 +216,18 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         homeSignal++
     }
+}
 
-    override fun onResume() {
-        super.onResume()
-        reload++
-    }
+private fun roundedIcon(d: Drawable): ImageBitmap {
+    val s = 128
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val path = Path()
+    path.addRoundRect(RectF(0f, 0f, s.toFloat(), s.toFloat()), s * 0.3f, s * 0.3f, Path.Direction.CW)
+    c.clipPath(path)
+    d.setBounds(0, 0, s, s)
+    d.draw(c)
+    return bmp.asImageBitmap()
 }
 
 private fun loadApps(ctx: Context): List<AppItem> {
@@ -177,11 +236,13 @@ private fun loadApps(ctx: Context): List<AppItem> {
     return pm.queryIntentActivities(intent, 0)
         .filter { it.activityInfo.packageName != ctx.packageName }
         .map {
+            val key = it.activityInfo.packageName + "/" + it.activityInfo.name
+            val icon = IconCache.map.getOrPut(key) { roundedIcon(it.loadIcon(pm)) }
             AppItem(
                 it.loadLabel(pm).toString(),
                 it.activityInfo.packageName,
                 it.activityInfo.name,
-                it.loadIcon(pm).toBitmap(128, 128).asImageBitmap()
+                icon
             )
         }
         .sortedBy { it.label.lowercase() }
@@ -245,7 +306,7 @@ fun AppIcon(
         Image(
             bitmap = app.icon,
             contentDescription = app.label,
-            modifier = Modifier.size(size.dp).clip(RoundedCornerShape((size * 0.3f).dp))
+            modifier = Modifier.size(size.dp)
         )
         Spacer(Modifier.height(4.dp))
         Text(
@@ -268,11 +329,11 @@ fun Header(ink: Color, gs: GlassStyle) {
             delay(60_000L - System.currentTimeMillis() % 60_000L)
         }
     }
-    val loc = Locale.getDefault()
-    val time = SimpleDateFormat("HH:mm", loc).format(now)
-    val weekday = SimpleDateFormat("EEEE", loc).format(now)
-    val day = SimpleDateFormat("d", loc).format(now)
-    val month = SimpleDateFormat("MMMM", loc).format(now)
+    val parts = remember(now) {
+        val loc = Locale.getDefault()
+        listOf("HH:mm", "EEEE", "d", "MMMM").map { SimpleDateFormat(it, loc).format(now) }
+    }
+    val (time, weekday, day, month) = parts
 
     Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         Text(time, color = ink, fontSize = 64.sp, fontWeight = FontWeight.Medium)
@@ -313,6 +374,24 @@ fun Header(ink: Color, gs: GlassStyle) {
 }
 
 @Composable
+fun PageDots(pager: PagerState, count: Int, ink: Color) {
+    Row(
+        Modifier.fillMaxWidth().padding(8.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        repeat(count) { i ->
+            val on = pager.currentPage == i
+            Box(
+                Modifier.padding(3.dp)
+                    .size(width = if (on) 14.dp else 5.dp, height = 5.dp)
+                    .clip(CircleShape)
+                    .background(ink.copy(alpha = if (on) 1f else 0.4f))
+            )
+        }
+    }
+}
+
+@Composable
 fun Drawer(
     apps: List<AppItem>,
     prefs: Prefs,
@@ -333,7 +412,7 @@ fun Drawer(
         }
     }
     val shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-    val base = if (prefs.dark) Color(0xFF12161F).al(0.88f) else Color.White.al(0.9f)
+    val base = if (prefs.dark) Color(0xFF12161F).al(0.95f) else Color.White.al(0.95f)
 
     Column(
         Modifier.fillMaxSize()
@@ -416,12 +495,13 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
     else (prefs.glass + 0.35f).coerceAtMost(0.8f)
     val gs = GlassStyle(glassAlpha, prefs.liquid)
 
-    val visible = all.filter { it.pkg !in prefs.hidden }
-    val dock = visible.take(4)
-    val rest = visible.drop(4)
-    val cols = prefs.columns
-    val first = rest.take(cols * 3)
-    val pages = listOf(first) + rest.drop(first.size).chunked(cols * 5)
+    val visible = remember(all, prefs.hidden) { all.filter { it.pkg !in prefs.hidden } }
+    val dock = remember(visible) { visible.take(4) }
+    val pages = remember(visible, prefs.columns) {
+        val rest = visible.drop(4)
+        val first = rest.take(prefs.columns * 3)
+        listOf(first) + rest.drop(first.size).chunked(prefs.columns * 5)
+    }
     val pager = rememberPagerState { pages.size }
 
     var menuApp by remember { mutableStateOf<AppItem?>(null) }
@@ -480,20 +560,7 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
                     )
                 }
             ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(8.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    repeat(pages.size) { i ->
-                        val on = pager.currentPage == i
-                        Box(
-                            Modifier.padding(3.dp)
-                                .size(width = if (on) 14.dp else 5.dp, height = 5.dp)
-                                .clip(CircleShape)
-                                .background(ink.copy(alpha = if (on) 1f else 0.4f))
-                        )
-                    }
-                }
+                PageDots(pager, pages.size, ink)
 
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
@@ -511,8 +578,8 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
 
         AnimatedVisibility(
             visible = showDrawer,
-            enter = slideInVertically(tween(300)) { it } + fadeIn(),
-            exit = slideOutVertically(tween(250)) { it } + fadeOut()
+            enter = slideInVertically(tween(280)) { it },
+            exit = slideOutVertically(tween(220)) { it }
         ) {
             Drawer(
                 visible, prefs, ink, gs,
@@ -567,7 +634,7 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
                     )
                     Text("Transparência do vidro")
                     Slider(prefs.glass, { prefs.changeGlass(it) }, valueRange = 0.05f..0.5f)
-                    Text("Desfoque do fundo: ${prefs.blur}")
+                    Text("Desfoque do fundo (pesado, 0 = desligado): ${prefs.blur}")
                     Slider(
                         prefs.blur.toFloat(), { prefs.changeBlur(it.roundToInt()) },
                         valueRange = 0f..80f
@@ -579,6 +646,14 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
                     ) {
                         Text("Liquid Glass")
                         Switch(prefs.liquid, { prefs.changeLiquid(it) })
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Animação entre páginas")
+                        Switch(prefs.pageFx, { prefs.changePageFx(it) })
                     }
                     Row(
                         Modifier.fillMaxWidth(),
@@ -636,15 +711,21 @@ fun AppPage(
     onOpen: (AppItem) -> Unit,
     onLong: (AppItem) -> Unit
 ) {
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(prefs.columns),
-        modifier = Modifier.graphicsLayer {
+    val fx = if (prefs.pageFx) {
+        Modifier.graphicsLayer {
+            compositingStrategy = CompositingStrategy.ModulateAlpha
             val o = abs((pager.currentPage - p) + pager.currentPageOffsetFraction)
                 .coerceIn(0f, 1f)
             alpha = 1f - o * 0.6f
             scaleX = 1f - o * 0.1f
             scaleY = 1f - o * 0.1f
-        },
+        }
+    } else {
+        Modifier
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(prefs.columns),
+        modifier = fx,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(prefs.spacing.dp)
     ) {
