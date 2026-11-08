@@ -7,10 +7,14 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.BatteryManager
@@ -41,7 +45,6 @@ import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
-import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -219,14 +222,36 @@ class MainActivity : ComponentActivity() {
 }
 
 private fun roundedIcon(d: Drawable): ImageBitmap {
-    val s = 128
+    val s = 144
+    val pad = 12f
+    val box = RectF(pad, pad, s - pad, s - pad)
+    val r = (s - 2 * pad) * 0.3f
     val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
     val c = Canvas(bmp)
+
+    val shadow = Paint(Paint.ANTI_ALIAS_FLAG)
+    shadow.color = 0xFFFFFFFF.toInt()
+    shadow.setShadowLayer(9f, 0f, 5f, 0x66000000)
+    c.drawRoundRect(box, r, r, shadow)
+
+    val saved = c.save()
     val path = Path()
-    path.addRoundRect(RectF(0f, 0f, s.toFloat(), s.toFloat()), s * 0.3f, s * 0.3f, Path.Direction.CW)
+    path.addRoundRect(box, r, r, Path.Direction.CW)
     c.clipPath(path)
-    d.setBounds(0, 0, s, s)
+    d.setBounds(pad.toInt(), pad.toInt(), (s - pad).toInt(), (s - pad).toInt())
     d.draw(c)
+    val gloss = Paint(Paint.ANTI_ALIAS_FLAG)
+    gloss.shader = LinearGradient(
+        0f, pad, 0f, s * 0.55f, 0x55FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP
+    )
+    c.drawRect(box, gloss)
+    c.restoreToCount(saved)
+
+    val rim = Paint(Paint.ANTI_ALIAS_FLAG)
+    rim.style = Paint.Style.STROKE
+    rim.strokeWidth = 2f
+    rim.color = 0x66FFFFFF
+    c.drawRoundRect(box, r, r, rim)
     return bmp.asImageBitmap()
 }
 
@@ -300,15 +325,14 @@ fun AppIcon(
                 onClick = onClick,
                 onLongClick = onLong
             )
-            .padding(4.dp),
+            .padding(2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Image(
             bitmap = app.icon,
             contentDescription = app.label,
-            modifier = Modifier.size(size.dp)
+            modifier = Modifier.size((size * 1.2f).dp)
         )
-        Spacer(Modifier.height(4.dp))
         Text(
             app.label, color = ink, fontSize = 11.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
@@ -336,14 +360,14 @@ fun Header(ink: Color, gs: GlassStyle) {
     val (time, weekday, day, month) = parts
 
     Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-        Text(time, color = ink, fontSize = 64.sp, fontWeight = FontWeight.Medium)
+        Text(time, color = ink, fontSize = 76.sp, fontWeight = FontWeight.Light)
         Text("$weekday, $day $month", color = ink.copy(alpha = 0.8f), fontSize = 14.sp)
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(
                 Modifier.weight(1f)
-                    .glass(RoundedCornerShape(24.dp), gs)
-                    .padding(14.dp)
+                    .glass(RoundedCornerShape(28.dp), gs)
+                    .padding(16.dp)
             ) {
                 Column {
                     Text("Bateria", color = ink.copy(alpha = 0.7f), fontSize = 12.sp)
@@ -359,8 +383,8 @@ fun Header(ink: Color, gs: GlassStyle) {
             }
             Box(
                 Modifier.weight(1f)
-                    .glass(RoundedCornerShape(24.dp), gs)
-                    .padding(14.dp)
+                    .glass(RoundedCornerShape(28.dp), gs)
+                    .padding(16.dp)
             ) {
                 Column {
                     Text("Calendário", color = ink.copy(alpha = 0.7f), fontSize = 12.sp)
@@ -395,6 +419,7 @@ fun PageDots(pager: PagerState, count: Int, ink: Color) {
 fun Drawer(
     apps: List<AppItem>,
     prefs: Prefs,
+    cols: Int,
     ink: Color,
     gs: GlassStyle,
     onOpen: (AppItem) -> Unit,
@@ -411,52 +436,57 @@ fun Drawer(
             if (c != null && c.isLetter()) c else '#'
         }
     }
-    val shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-    val base = if (prefs.dark) Color(0xFF12161F).al(0.95f) else Color.White.al(0.95f)
+    val shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+    val base = if (prefs.dark) Color(0xFF11141B) else Color(0xFFF2F3F7)
+    val headTop = if (prefs.dark) Color.White.al(0.10f) else Color.White.al(0.7f)
 
     Column(
         Modifier.fillMaxSize()
             .statusBarsPadding()
-            .padding(top = 16.dp)
+            .padding(top = 12.dp)
             .imePadding()
             .clip(shape)
             .background(base)
-            .glass(shape, gs)
     ) {
-        Box(
-            Modifier.fillMaxWidth().height(28.dp).pointerInput(Unit) {
-                var total = 0f
-                detectVerticalDragGestures(
-                    onDragStart = { total = 0f },
-                    onDragEnd = { if (total > 60f) onClose() },
-                    onVerticalDrag = { _, dy -> total += dy }
-                )
-            },
-            contentAlignment = Alignment.Center
+        Column(
+            Modifier.fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(headTop, Color.Transparent)))
         ) {
             Box(
-                Modifier.size(width = 36.dp, height = 4.dp)
-                    .clip(CircleShape).background(ink.al(0.4f))
+                Modifier.fillMaxWidth().height(28.dp).pointerInput(Unit) {
+                    var total = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = { if (total > 60f) onClose() },
+                        onVerticalDrag = { _, dy -> total += dy }
+                    )
+                },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier.size(width = 36.dp, height = 4.dp)
+                        .clip(CircleShape).background(ink.al(0.4f))
+                )
+            }
+            TextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                placeholder = { Text("Pesquisar apps", color = ink.al(0.6f)) },
+                shape = RoundedCornerShape(28.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedTextColor = ink,
+                    unfocusedTextColor = ink,
+                    cursorColor = ink,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                ),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    .glass(RoundedCornerShape(28.dp), GlassStyle(gs.alpha + 0.06f, gs.liquid))
             )
         }
-        TextField(
-            value = query,
-            onValueChange = { query = it },
-            singleLine = true,
-            placeholder = { Text("Pesquisar apps", color = ink.al(0.6f)) },
-            shape = RoundedCornerShape(24.dp),
-            colors = TextFieldDefaults.colors(
-                focusedTextColor = ink,
-                unfocusedTextColor = ink,
-                cursorColor = ink,
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            ),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                .glass(RoundedCornerShape(24.dp), gs)
-        )
         if (filtered.isEmpty()) {
             Text(
                 "Nenhum app encontrado.", color = ink.al(0.7f),
@@ -464,18 +494,22 @@ fun Drawer(
             )
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(prefs.columns),
+                columns = GridCells.Fixed(cols),
                 modifier = Modifier.weight(1f).navigationBarsPadding(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(prefs.spacing.dp)
             ) {
                 grouped.forEach { (letter, list) ->
                     item(key = "h$letter", span = { GridItemSpan(maxLineSpan) }) {
-                        Text(
-                            letter.toString(), color = ink.al(0.7f),
-                            fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(start = 4.dp, top = 8.dp)
-                        )
+                        Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                            Text(
+                                letter.toString(), color = ink,
+                                fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                modifier = Modifier
+                                    .glass(RoundedCornerShape(14.dp), gs)
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                     items(list, key = { it.pkg + it.activity }) { app ->
                         AppIcon(app, prefs.iconSize, ink, { onOpen(app) }, { onLong(app) })
@@ -490,6 +524,8 @@ fun Drawer(
 fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
     val ctx = LocalContext.current
     val view = LocalView.current
+    val land = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cols = if (land) prefs.columns * 2 else prefs.columns
     val ink = if (prefs.dark) Color.White else Color(0xFF1B1B1F)
     val glassAlpha = if (prefs.dark) prefs.glass
     else (prefs.glass + 0.35f).coerceAtMost(0.8f)
@@ -497,10 +533,10 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
 
     val visible = remember(all, prefs.hidden) { all.filter { it.pkg !in prefs.hidden } }
     val dock = remember(visible) { visible.take(4) }
-    val pages = remember(visible, prefs.columns) {
+    val pages = remember(visible, cols, land) {
         val rest = visible.drop(4)
-        val first = rest.take(prefs.columns * 3)
-        listOf(first) + rest.drop(first.size).chunked(prefs.columns * 5)
+        val first = rest.take(cols * (if (land) 1 else 3))
+        listOf(first) + rest.drop(first.size).chunked(cols * (if (land) 2 else 5))
     }
     val pager = rememberPagerState { pages.size }
 
@@ -546,7 +582,7 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
             }
 
             HorizontalPager(pager, Modifier.weight(1f)) { p ->
-                AppPage(p, pager, pages.getOrElse(p) { emptyList() }, prefs, ink, gs,
+                AppPage(p, pager, pages.getOrElse(p) { emptyList() }, cols, prefs, ink, gs,
                     onOpen = { openApp(ctx, view, it) }, onLong = { menuApp = it })
             }
 
@@ -563,9 +599,10 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
                 PageDots(pager, pages.size, ink)
 
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-                        .glass(RoundedCornerShape(32.dp), gs)
-                        .padding(10.dp),
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        .fillMaxWidth()
+                        .glass(RoundedCornerShape(34.dp), gs)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     dock.forEach {
@@ -582,7 +619,7 @@ fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
             exit = slideOutVertically(tween(220)) { it }
         ) {
             Drawer(
-                visible, prefs, ink, gs,
+                visible, prefs, cols, ink, gs,
                 onOpen = { openApp(ctx, view, it); showDrawer = false },
                 onLong = { menuApp = it },
                 onClose = { showDrawer = false }
@@ -705,6 +742,7 @@ fun AppPage(
     p: Int,
     pager: PagerState,
     apps: List<AppItem>,
+    cols: Int,
     prefs: Prefs,
     ink: Color,
     gs: GlassStyle,
@@ -724,7 +762,7 @@ fun AppPage(
         Modifier
     }
     LazyVerticalGrid(
-        columns = GridCells.Fixed(prefs.columns),
+        columns = GridCells.Fixed(cols),
         modifier = fx,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(prefs.spacing.dp)
