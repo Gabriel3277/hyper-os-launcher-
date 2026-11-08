@@ -60,15 +60,30 @@ class Prefs(ctx: Context) {
     var dark by mutableStateOf(sp.getBoolean("dark", true))
         private set
 
-    fun setHidden(pkg: String, hide: Boolean) {
+    fun changeHidden(pkg: String, hide: Boolean) {
         hidden = if (hide) hidden + pkg else hidden - pkg
         sp.edit().putStringSet("hidden", hidden).apply()
     }
-    fun setColumns(v: Int) { columns = v; sp.edit().putInt("columns", v).apply() }
-    fun setIconSize(v: Int) { iconSize = v; sp.edit().putInt("iconSize", v).apply() }
-    fun setSpacing(v: Int) { spacing = v; sp.edit().putInt("spacing", v).apply() }
-    fun setGlass(v: Float) { glass = v; sp.edit().putFloat("glass", v).apply() }
-    fun setDark(v: Boolean) { dark = v; sp.edit().putBoolean("dark", v).apply() }
+    fun changeColumns(v: Int) {
+        columns = v
+        sp.edit().putInt("columns", v).apply()
+    }
+    fun changeIconSize(v: Int) {
+        iconSize = v
+        sp.edit().putInt("iconSize", v).apply()
+    }
+    fun changeSpacing(v: Int) {
+        spacing = v
+        sp.edit().putInt("spacing", v).apply()
+    }
+    fun changeGlass(v: Float) {
+        glass = v
+        sp.edit().putFloat("glass", v).apply()
+    }
+    fun changeDark(v: Boolean) {
+        dark = v
+        sp.edit().putBoolean("dark", v).apply()
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -314,7 +329,7 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
             title = { Text(app.label) },
             text = {
                 Column {
-                    TextButton({ prefs.setHidden(app.pkg, true); menuApp = null }) {
+                    TextButton({ prefs.changeHidden(app.pkg, true); menuApp = null }) {
                         Text("Esconder app")
                     }
                     TextButton({ appInfo(ctx, app.pkg); menuApp = null }) {
@@ -337,28 +352,28 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("Colunas: ${prefs.columns}")
                     Slider(
-                        prefs.columns.toFloat(), { prefs.setColumns(it.roundToInt()) },
+                        prefs.columns.toFloat(), { prefs.changeColumns(it.roundToInt()) },
                         valueRange = 3f..6f, steps = 2
                     )
                     Text("Tamanho dos ícones: ${prefs.iconSize}")
                     Slider(
-                        prefs.iconSize.toFloat(), { prefs.setIconSize(it.roundToInt()) },
+                        prefs.iconSize.toFloat(), { prefs.changeIconSize(it.roundToInt()) },
                         valueRange = 40f..68f
                     )
                     Text("Espaçamento: ${prefs.spacing}")
                     Slider(
-                        prefs.spacing.toFloat(), { prefs.setSpacing(it.roundToInt()) },
+                        prefs.spacing.toFloat(), { prefs.changeSpacing(it.roundToInt()) },
                         valueRange = 4f..28f
                     )
                     Text("Transparência do vidro")
-                    Slider(prefs.glass, { prefs.setGlass(it) }, valueRange = 0.05f..0.5f)
+                    Slider(prefs.glass, { prefs.changeGlass(it) }, valueRange = 0.05f..0.5f)
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Tema escuro")
-                        Switch(prefs.dark, { prefs.setDark(it) })
+                        Switch(prefs.dark, { prefs.changeDark(it) })
                     }
                     TextButton({ showSettings = false; showHidden = true }) {
                         Text("Apps ocultos (${prefs.hidden.size})")
@@ -386,7 +401,7 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(a.label, Modifier.weight(1f))
-                                TextButton({ prefs.setHidden(a.pkg, false) }) { Text("Mostrar") }
+                                TextButton({ prefs.changeHidden(a.pkg, false) }) { Text("Mostrar") }
                             }
                         }
                     }
