@@ -12,10 +12,13 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
@@ -26,6 +29,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.*
@@ -44,6 +48,39 @@ class AppItem(
     val icon: ImageBitmap
 )
 
+class GlassStyle(val alpha: Float, val liquid: Boolean)
+
+private fun Color.al(a: Float) = copy(alpha = a.coerceIn(0f, 1f))
+
+fun Modifier.glass(shape: Shape, g: GlassStyle): Modifier {
+    val a = g.alpha
+    return if (!g.liquid) {
+        this.clip(shape).background(Color.White.al(a))
+    } else {
+        this.clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color.White.al(a * 1.8f),
+                        Color.White.al(a * 0.8f),
+                        Color.White.al(a * 1.2f)
+                    )
+                )
+            )
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.al(0.75f),
+                        Color.White.al(0.08f),
+                        Color.White.al(0.4f)
+                    )
+                ),
+                shape
+            )
+    }
+}
+
 class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("launcher", Context.MODE_PRIVATE)
 
@@ -58,6 +95,10 @@ class Prefs(ctx: Context) {
     var glass by mutableFloatStateOf(sp.getFloat("glass", 0.18f))
         private set
     var dark by mutableStateOf(sp.getBoolean("dark", true))
+        private set
+    var liquid by mutableStateOf(sp.getBoolean("liquid", true))
+        private set
+    var blur by mutableIntStateOf(sp.getInt("blur", 25))
         private set
 
     fun changeHidden(pkg: String, hide: Boolean) {
@@ -84,10 +125,19 @@ class Prefs(ctx: Context) {
         dark = v
         sp.edit().putBoolean("dark", v).apply()
     }
+    fun changeLiquid(v: Boolean) {
+        liquid = v
+        sp.edit().putBoolean("liquid", v).apply()
+    }
+    fun changeBlur(v: Int) {
+        blur = v
+        sp.edit().putInt("blur", v).apply()
+    }
 }
 
 class MainActivity : ComponentActivity() {
     private var reload by mutableIntStateOf(0)
+    private var homeSignal by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,12 +149,20 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(reload) {
                 apps = withContext(Dispatchers.Default) { loadApps(ctx) }
             }
+            LaunchedEffect(prefs.blur) {
+                window.setBackgroundBlurRadius(prefs.blur)
+            }
             MaterialTheme(
                 colorScheme = if (prefs.dark) darkColorScheme() else lightColorScheme()
             ) {
-                Home(apps, prefs)
+                Home(apps, prefs, homeSignal)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        homeSignal++
     }
 
     override fun onResume() {
@@ -198,7 +256,7 @@ fun AppIcon(
 }
 
 @Composable
-fun Header(ink: Color, glass: Color) {
+fun Header(ink: Color, gs: GlassStyle) {
     val ctx = LocalContext.current
     var now by remember { mutableStateOf(Date()) }
     var battery by remember { mutableIntStateOf(0) }
@@ -222,8 +280,9 @@ fun Header(ink: Color, glass: Color) {
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(24.dp))
-                    .background(glass).padding(14.dp)
+                Modifier.weight(1f)
+                    .glass(RoundedCornerShape(24.dp), gs)
+                    .padding(14.dp)
             ) {
                 Column {
                     Text("Bateria", color = ink.copy(alpha = 0.7f), fontSize = 12.sp)
@@ -238,8 +297,9 @@ fun Header(ink: Color, glass: Color) {
                 }
             }
             Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(24.dp))
-                    .background(glass).padding(14.dp)
+                Modifier.weight(1f)
+                    .glass(RoundedCornerShape(24.dp), gs)
+                    .padding(14.dp)
             ) {
                 Column {
                     Text("Calendário", color = ink.copy(alpha = 0.7f), fontSize = 12.sp)
@@ -253,12 +313,108 @@ fun Header(ink: Color, glass: Color) {
 }
 
 @Composable
-fun Home(all: List<AppItem>, prefs: Prefs) {
+fun Drawer(
+    apps: List<AppItem>,
+    prefs: Prefs,
+    ink: Color,
+    gs: GlassStyle,
+    onOpen: (AppItem) -> Unit,
+    onLong: (AppItem) -> Unit,
+    onClose: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(apps, query) {
+        apps.filter { it.label.contains(query.trim(), ignoreCase = true) }
+    }
+    val grouped = remember(filtered) {
+        filtered.groupBy {
+            val c = it.label.firstOrNull()?.uppercaseChar()
+            if (c != null && c.isLetter()) c else '#'
+        }
+    }
+    val shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    val base = if (prefs.dark) Color(0xFF12161F).al(0.88f) else Color.White.al(0.9f)
+
+    Column(
+        Modifier.fillMaxSize()
+            .statusBarsPadding()
+            .padding(top = 16.dp)
+            .imePadding()
+            .clip(shape)
+            .background(base)
+            .glass(shape, gs)
+    ) {
+        Box(
+            Modifier.fillMaxWidth().height(28.dp).pointerInput(Unit) {
+                var total = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { total = 0f },
+                    onDragEnd = { if (total > 60f) onClose() },
+                    onVerticalDrag = { _, dy -> total += dy }
+                )
+            },
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                Modifier.size(width = 36.dp, height = 4.dp)
+                    .clip(CircleShape).background(ink.al(0.4f))
+            )
+        }
+        TextField(
+            value = query,
+            onValueChange = { query = it },
+            singleLine = true,
+            placeholder = { Text("Pesquisar apps", color = ink.al(0.6f)) },
+            shape = RoundedCornerShape(24.dp),
+            colors = TextFieldDefaults.colors(
+                focusedTextColor = ink,
+                unfocusedTextColor = ink,
+                cursorColor = ink,
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent
+            ),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                .glass(RoundedCornerShape(24.dp), gs)
+        )
+        if (filtered.isEmpty()) {
+            Text(
+                "Nenhum app encontrado.", color = ink.al(0.7f),
+                modifier = Modifier.padding(24.dp)
+            )
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(prefs.columns),
+                modifier = Modifier.weight(1f).navigationBarsPadding(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(prefs.spacing.dp)
+            ) {
+                grouped.forEach { (letter, list) ->
+                    item(key = "h$letter", span = { GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            letter.toString(), color = ink.al(0.7f),
+                            fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                        )
+                    }
+                    items(list, key = { it.pkg + it.activity }) { app ->
+                        AppIcon(app, prefs.iconSize, ink, { onOpen(app) }, { onLong(app) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun Home(all: List<AppItem>, prefs: Prefs, homeTick: Int) {
     val ctx = LocalContext.current
     val view = LocalView.current
     val ink = if (prefs.dark) Color.White else Color(0xFF1B1B1F)
-    val glass = if (prefs.dark) Color.White.copy(alpha = prefs.glass)
-    else Color.White.copy(alpha = (prefs.glass + 0.35f).coerceAtMost(0.8f))
+    val glassAlpha = if (prefs.dark) prefs.glass
+    else (prefs.glass + 0.35f).coerceAtMost(0.8f)
+    val gs = GlassStyle(glassAlpha, prefs.liquid)
 
     val visible = all.filter { it.pkg !in prefs.hidden }
     val dock = visible.take(4)
@@ -271,55 +427,99 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
     var menuApp by remember { mutableStateOf<AppItem?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var showHidden by remember { mutableStateOf(false) }
+    var showDrawer by remember { mutableStateOf(false) }
 
-    Column(
-        Modifier.fillMaxSize()
-            .background(if (prefs.dark) Color.Black.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.25f))
-            .statusBarsPadding().navigationBarsPadding()
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.End
+    BackHandler { showDrawer = false }
+
+    LaunchedEffect(homeTick) {
+        showDrawer = false
+        menuApp = null
+        showSettings = false
+        showHidden = false
+        pager.animateScrollToPage(0)
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize()
+                .background(if (prefs.dark) Color.Black.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.25f))
+                .statusBarsPadding().navigationBarsPadding()
         ) {
-            Text(
-                "Ajustes", color = ink, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(glass)
-                    .clickable { showSettings = true }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            )
-        }
-
-        HorizontalPager(pager, Modifier.weight(1f)) { p ->
-            AppPage(p, pager, pages.getOrElse(p) { emptyList() }, prefs, ink, glass,
-                onOpen = { openApp(ctx, view, it) }, onLong = { menuApp = it })
-        }
-
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.Center
-        ) {
-            repeat(pages.size) { i ->
-                val on = pager.currentPage == i
-                Box(
-                    Modifier.padding(3.dp)
-                        .size(width = if (on) 14.dp else 5.dp, height = 5.dp)
-                        .clip(CircleShape)
-                        .background(ink.copy(alpha = if (on) 1f else 0.4f))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+            ) {
+                Text(
+                    "Apps", color = ink, fontSize = 12.sp,
+                    modifier = Modifier
+                        .glass(RoundedCornerShape(20.dp), gs)
+                        .clickable { showDrawer = true }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                )
+                Text(
+                    "Ajustes", color = ink, fontSize = 12.sp,
+                    modifier = Modifier
+                        .glass(RoundedCornerShape(20.dp), gs)
+                        .clickable { showSettings = true }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 )
             }
+
+            HorizontalPager(pager, Modifier.weight(1f)) { p ->
+                AppPage(p, pager, pages.getOrElse(p) { emptyList() }, prefs, ink, gs,
+                    onOpen = { openApp(ctx, view, it) }, onLong = { menuApp = it })
+            }
+
+            Column(
+                Modifier.pointerInput(Unit) {
+                    var total = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = { if (total < -60f) showDrawer = true },
+                        onVerticalDrag = { _, dy -> total += dy }
+                    )
+                }
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(8.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    repeat(pages.size) { i ->
+                        val on = pager.currentPage == i
+                        Box(
+                            Modifier.padding(3.dp)
+                                .size(width = if (on) 14.dp else 5.dp, height = 5.dp)
+                                .clip(CircleShape)
+                                .background(ink.copy(alpha = if (on) 1f else 0.4f))
+                        )
+                    }
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                        .glass(RoundedCornerShape(32.dp), gs)
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    dock.forEach {
+                        AppIcon(it, prefs.iconSize - 4, ink,
+                            { openApp(ctx, view, it) }, { menuApp = it })
+                    }
+                }
+            }
         }
 
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(32.dp))
-                .background(glass)
-                .padding(10.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
+        AnimatedVisibility(
+            visible = showDrawer,
+            enter = slideInVertically(tween(300)) { it } + fadeIn(),
+            exit = slideOutVertically(tween(250)) { it } + fadeOut()
         ) {
-            dock.forEach {
-                AppIcon(it, prefs.iconSize - 4, ink,
-                    { openApp(ctx, view, it) }, { menuApp = it })
-            }
+            Drawer(
+                visible, prefs, ink, gs,
+                onOpen = { openApp(ctx, view, it); showDrawer = false },
+                onLong = { menuApp = it },
+                onClose = { showDrawer = false }
+            )
         }
     }
 
@@ -367,6 +567,19 @@ fun Home(all: List<AppItem>, prefs: Prefs) {
                     )
                     Text("Transparência do vidro")
                     Slider(prefs.glass, { prefs.changeGlass(it) }, valueRange = 0.05f..0.5f)
+                    Text("Desfoque do fundo: ${prefs.blur}")
+                    Slider(
+                        prefs.blur.toFloat(), { prefs.changeBlur(it.roundToInt()) },
+                        valueRange = 0f..80f
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Liquid Glass")
+                        Switch(prefs.liquid, { prefs.changeLiquid(it) })
+                    }
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -419,7 +632,7 @@ fun AppPage(
     apps: List<AppItem>,
     prefs: Prefs,
     ink: Color,
-    glass: Color,
+    gs: GlassStyle,
     onOpen: (AppItem) -> Unit,
     onLong: (AppItem) -> Unit
 ) {
@@ -436,7 +649,7 @@ fun AppPage(
         verticalArrangement = Arrangement.spacedBy(prefs.spacing.dp)
     ) {
         if (p == 0) {
-            item(span = { GridItemSpan(maxLineSpan) }) { Header(ink, glass) }
+            item(span = { GridItemSpan(maxLineSpan) }) { Header(ink, gs) }
         }
         items(apps, key = { it.pkg + it.activity }) { app ->
             AppIcon(app, prefs.iconSize, ink, { onOpen(app) }, { onLong(app) })
